@@ -52,6 +52,21 @@ var _ = Describe("Writer", func() {
 		Expect(info.Metadata).To(Equal(bfs.Metadata{"X-Feedx-Last-Modified": "1515151515123"}))
 	})
 
+	It("should write empty", func() {
+		w, err := feedx.NewWriter(context.Background(), compressed, &feedx.WriterOptions{
+			LastMod: time.Unix(1515151515, 123456789),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		defer w.Discard()
+
+		Expect(w.Commit()).To(Succeed())
+
+		info, err := compressed.Head(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(info.Size).To(BeNumerically("~", 20, 5))
+		Expect(info.Metadata).To(Equal(bfs.Metadata{"X-Feedx-Last-Modified": "1515151515123"}))
+	})
+
 	It("should encode", func() {
 		Expect(writeMulti(plain, 10)).To(Succeed())
 		Expect(writeMulti(compressed, 10)).To(Succeed())

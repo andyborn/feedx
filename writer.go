@@ -60,36 +60,32 @@ func NewWriter(ctx context.Context, remote *bfs.Object, opt *WriterOptions) (*Wr
 	o.norm(remote.Name())
 
 	ctx, cancel := context.WithCancel(ctx)
-	return &Writer{
+	w := &Writer{
 		ctx:    ctx,
 		cancel: cancel,
 		remote: remote,
 		opt:    o,
-	}, nil
+	}
+
+	if err := w.ensureCreated(); err != nil {
+		return nil, err
+	}
+
+	return w, nil
 }
 
 // Write write raw bytes to the feed.
 func (w *Writer) Write(p []byte) (int, error) {
-	if err := w.ensureCreated(); err != nil {
-		return 0, err
-	}
 	return w.ww.Write(p)
 }
 
 // WriteString write a raw string to the feed.
 func (w *Writer) WriteString(s string) (int, error) {
-	if err := w.ensureCreated(); err != nil {
-		return 0, err
-	}
 	return w.ww.WriteString(s)
 }
 
 // Encode appends a value to the feed.
 func (w *Writer) Encode(v interface{}) error {
-	if err := w.ensureCreated(); err != nil {
-		return err
-	}
-
 	if w.fe == nil {
 		fe, err := w.opt.Format.NewEncoder(w.ww)
 		if err != nil {

@@ -66,4 +66,21 @@ var _ = Describe("Producer", func() {
 		Expect(info.Size).To(BeNumerically("~", 75, 10))
 		Expect(info.Metadata).To(HaveKeyWithValue("X-Feedx-Last-Modified", "1515151515000"))
 	})
+
+	It("should produce with no data written", func() {
+		var err error
+		subject, err = feedx.NewProducerForRemote(ctx, obj, nil, func(w *feedx.Writer) error {
+			return nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(subject.LastPush()).To(BeTemporally("~", time.Now(), time.Second))
+		Expect(subject.LastModified()).To(BeTemporally("~", time.Now(), time.Second))
+		Expect(subject.NumWritten()).To(Equal(0))
+		Expect(subject.Close()).To(Succeed())
+
+		info, err := obj.Head(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(info.Size).To(BeNumerically("~", 20, 5))
+	})
 })
