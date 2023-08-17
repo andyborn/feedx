@@ -2,13 +2,23 @@ package feedx
 
 import (
 	"context"
+	"errors"
+	"sync/atomic"
 	"time"
 
 	"github.com/bsm/bfs"
 )
 
+var defaultCompactFunc = func([]*Reader, *Writer) error {
+	return errors.New("TODO! implement")
+}
+
 // IncrmentalProduceFunc returns a ProduceFunc closure around an incremental mod time.
 type IncrementalProduceFunc func(time.Time) ProduceFunc
+
+// TODO! use ReaderIterator
+// CompactionFunc compacts data from multiple readers and outputs to writer
+type CompactionFunc func([]*Reader, *Writer) error
 
 // IncrementalProducer produces a continuous incremental feed.
 type IncrementalProducer struct {
@@ -22,11 +32,20 @@ type IncrementalProducer struct {
 	ctx  context.Context
 	stop context.CancelFunc
 	ipfn IncrementalProduceFunc
+
+	lastCompact int64
 }
 
 // IncrementalProducerOptions configure the producer instance.
 type IncrementalProducerOptions struct {
 	ProducerOptions
+	CompactionOptions
+}
+
+type CompactionOptions struct {
+	copt ConsumerOptions
+
+	CompactFunc CompactionFunc
 }
 
 func (o *IncrementalProducerOptions) norm(lmfn LastModFunc) {
@@ -40,6 +59,16 @@ func (o *IncrementalProducerOptions) norm(lmfn LastModFunc) {
 		o.Interval = time.Minute
 	}
 	o.LastModCheck = lmfn
+
+	// set defaults for compaction
+	o.copt.Compression = o.Compression
+	o.copt.Format = o.Format
+	if o.copt.Interval == 0 {
+		o.copt.Interval = time.Hour
+	}
+	if o.CompactFunc == nil {
+		o.CompactionOptions.CompactFunc = defaultCompactFunc
+	}
 }
 
 // NewIncrementalProducer inits a new incremental feed producer.
@@ -105,19 +134,30 @@ func (p *IncrementalProducer) Close() (err error) {
 	return
 }
 
+// LastCompact returns time of last compact attempt.
+func (p *IncrementalProducer) LastCompact() time.Time {
+	return timestamp(atomic.LoadInt64(&p.lastCompact)).Time()
+}
+
 func (p *IncrementalProducer) loop() {
-	ticker := time.NewTicker(p.opt.Interval)
-	defer ticker.Stop()
+	tickerA := time.NewTicker(p.opt.Interval)
+	defer tickerA.Stop()
+
+	tickerB := time.NewTicker(p.opt.copt.Interval)
+	defer tickerB.Stop()
 
 	for {
 		select {
 		case <-p.ctx.Done():
 			return
-		case <-ticker.C:
+		case <-tickerA.C:
 			state, err := p.push()
 			if p.opt.AfterPush != nil {
 				p.opt.AfterPush(state, err)
 			}
+		case <-tickerB.C:
+			// TODO what should it return?  maybe just use existing AfterPush opt?
+			_ = p.compact()
 		}
 	}
 }
@@ -195,4 +235,69 @@ func (p *IncrementalProducer) commitManifest(m *manifest, wopt *WriterOptions) e
 		return err
 	}
 	return writer.Commit()
+}
+
+type CompactOptions struct {
+}
+
+func (p *IncrementalProducer) compact() error {
+	compactTime := timestampFromTime(time.Now()).Millis()
+	defer func() {
+		atomic.StoreInt64(&p.lastCompact, compactTime)
+	}()
+
+	// fetch manifest from remote
+	manifest, err := loadManifest(p.ctx, p.manifest)
+	if err != nil {
+		return err
+	}
+
+	// TODO! which files are we compacting?  all of them?  just the oldest N files? For now assume all
+	files := manifest.Files
+
+	// build reader slice & get max modified
+	// TODO! can use ReaderIterator once approved so dont have to defer r.Close()
+	var maxMod timestamp
+	readers := make([]*Reader, 0, len(manifest.Files))
+	for _, file := range files {
+		obj := bfs.NewObjectFromBucket(p.bucket, file) // dont need to defer Close as inited from bucket
+		r, err := NewReader(p.ctx, obj, &p.opt.copt.ReaderOptions)
+		if err != nil {
+			return err
+		}
+		defer r.Close()
+
+		readers = append(readers, r)
+
+		ts, err := remoteLastModified(p.ctx, obj)
+		if err != nil {
+			return err
+		}
+		if ts > maxMod {
+			maxMod = ts
+		}
+	}
+
+	// init writer for compacted file
+	manifest.Generation++
+	wopt := p.opt.WriterOptions
+	wopt.LastMod = maxMod.Time()
+	fname := manifest.newDataFileName(&wopt)
+	writer := NewWriter(p.ctx, bfs.NewObjectFromBucket(p.bucket, fname), &wopt)
+	defer writer.Discard()
+
+	// run file compaction
+	if err := p.opt.CompactFunc(readers, writer); err != nil {
+		return err
+	}
+
+	if err := writer.Commit(); err != nil {
+		return err
+	}
+
+	// rewrite the remote manifest
+	manifest.Files = append(manifest.Files, fname)
+	manifest.LastModified = timestampFromTime(wopt.LastMod)
+
+	return p.commitManifest(manifest, &WriterOptions{LastMod: wopt.LastMod})
 }

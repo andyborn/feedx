@@ -12,6 +12,10 @@ func (c *consumer) TestSync() error {
 	return err
 }
 
+func (p *IncrementalProducer) TestCompact() error {
+	return p.compact()
+}
+
 func TimestampFromTime(t time.Time) timestamp {
 	return timestampFromTime(t)
 }
