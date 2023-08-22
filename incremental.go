@@ -2,6 +2,7 @@ package feedx
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/bsm/bfs"
@@ -195,4 +196,165 @@ func (p *IncrementalProducer) commitManifest(m *manifest, wopt *WriterOptions) e
 		return err
 	}
 	return writer.Commit()
+}
+
+// ------------------------------------------------------------------------------------------
+
+// IncrementalConsumerOptions configure the consumer instance.
+type IncrementalConsumerOptions struct {
+	ConsumerOptions
+}
+
+func (o *IncrementalConsumerOptions) norm() {
+	if o.Interval == 0 {
+		o.Interval = time.Minute
+	}
+}
+
+// NewIncrementalConsumer starts a new feed consumer.
+func NewIncrementalConsumer(ctx context.Context, bucketURL string, opt *IncrementalConsumerOptions, cfn ConsumeFunc) (Consumer, error) {
+	bucket, err := bfs.Connect(ctx, bucketURL)
+	if err != nil {
+		return nil, err
+	}
+
+	csm, err := NewIncrementalConsumerForBucket(ctx, bucket, opt, cfn)
+	if err != nil {
+		_ = bucket.Close()
+		return nil, err
+	}
+	csm.(*incrementalConsumer).ownBucket = true
+	return csm, nil
+}
+
+// NewIncrementalConsumerForBucket starts a new feed consumer with a remote.
+func NewIncrementalConsumerForBucket(ctx context.Context, bucket bfs.Bucket, opt *IncrementalConsumerOptions, cfn ConsumeFunc) (Consumer, error) {
+	var o IncrementalConsumerOptions
+	if opt != nil {
+		o = IncrementalConsumerOptions(*opt)
+	}
+	o.norm()
+
+	ctx, stop := context.WithCancel(ctx)
+	c := &incrementalConsumer{
+		bucket:   bucket,
+		manifest: bfs.NewObjectFromBucket(bucket, "manifest.json"),
+		opt:      o,
+		ctx:      ctx,
+		stop:     stop,
+		cfn:      cfn,
+	}
+
+	// run initial sync
+	if _, err := c.sync(true); err != nil {
+		_ = c.Close()
+		return nil, err
+	}
+
+	// start continuous loop
+	go c.loop()
+
+	return c, nil
+}
+
+type incrementalConsumer struct {
+	manifest  *bfs.Object
+	bucket    bfs.Bucket
+	ownBucket bool
+
+	opt  IncrementalConsumerOptions
+	ctx  context.Context
+	stop context.CancelFunc
+
+	cfn ConsumeFunc
+
+	consumerState
+}
+
+// Close implements Consumer interface.
+func (c *incrementalConsumer) Close() (err error) {
+	c.stop()
+	if e := c.manifest.Close(); e != nil {
+		err = e
+	}
+	if c.ownBucket {
+		if e := c.bucket.Close(); e != nil {
+			err = e
+		}
+	}
+	return
+}
+
+func (c *incrementalConsumer) sync(force bool) (*ConsumerSync, error) {
+	start := time.Now()
+	defer c.consumerState.updateLastSync(start)
+
+	// retrieve original last modified time
+	lastMod, err := remoteLastModified(c.ctx, c.manifest)
+	if err != nil {
+		return nil, err
+	}
+
+	// skip update if not forced or modified
+	if !force && lastMod > 0 && lastMod.Millis() == atomic.LoadInt64(&c.lastMod) {
+		return &ConsumerSync{Consumer: c}, nil
+	}
+
+	// fetch remote manifest
+	manifest, err := loadManifest(c.ctx, c.manifest)
+	if err != nil {
+		return nil, err
+	}
+
+	// set reader options based on file ext.
+	files := manifest.Files
+	if len(files) != 0 {
+		c.opt.ReaderOptions.norm(files[0])
+	}
+
+	// init multi reader for remote files
+	remotes := make([]*bfs.Object, 0, len(files))
+	for _, file := range files {
+		r := bfs.NewObjectFromBucket(c.bucket, file)
+		defer r.Close()
+		remotes = append(remotes, r)
+	}
+	reader := MultiReader(c.ctx, remotes, &c.opt.ReaderOptions)
+	defer reader.Close()
+
+	// consume feed
+	data, err := c.cfn(reader)
+	if err != nil {
+		return nil, err
+	}
+
+	// update stores
+	previous := c.data.Load()
+	c.consumerState.storeData(data)
+	c.consumerState.updateNumRead(reader.NumRead())
+	c.consumerState.updateLastModified(lastMod.Time())
+	c.consumerState.updateLastConsumed(start)
+
+	return &ConsumerSync{
+		Consumer:     c,
+		Updated:      true,
+		PreviousData: previous,
+	}, nil
+}
+
+func (c *incrementalConsumer) loop() {
+	ticker := time.NewTicker(c.opt.Interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-ticker.C:
+			state, err := c.sync(false)
+			if c.opt.AfterSync != nil {
+				c.opt.AfterSync(state, err)
+			}
+		}
+	}
 }
