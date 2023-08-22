@@ -137,7 +137,7 @@ func (r *Reader) ensureCurrent() bool {
 		}
 		o.norm(remote.Name())
 		r.cur = &streamReader{
-			remote: remote,
+			remote: r.remotes[r.pos],
 			opt:    o,
 			ctx:    r.ctx,
 		}
