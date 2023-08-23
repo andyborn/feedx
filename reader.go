@@ -177,7 +177,12 @@ func (r *streamReader) Read(p []byte) (int, error) {
 	if err := r.ensureOpen(); err != nil {
 		return 0, err
 	}
-	return r.cr.Read(p)
+	n, err := r.cr.Read(p)
+	// only return EOF once all data has already been read
+	if n > 0 && errors.Is(err, io.EOF) {
+		err = nil
+	}
+	return n, err
 }
 
 // Decode decodes the next formatted value from the feed.
