@@ -59,8 +59,16 @@ func MultiReader(ctx context.Context, remotes []*bfs.Object, opt *ReaderOptions)
 // Read reads raw bytes from the feed.
 // At end of feed, Read returns 0, io.EOF.
 func (r *Reader) Read(p []byte) (int, error) {
-	if !r.ensureCurrent() {
+	if r.pos >= len(r.remotes) {
 		return 0, io.EOF
+	}
+
+	if r.cur == nil {
+		r.cur = &streamReader{
+			remote: r.remotes[r.pos],
+			opt:    r.opt,
+			ctx:    r.ctx,
+		}
 	}
 
 	n, err := r.cur.Read(p)
@@ -162,7 +170,6 @@ type streamReader struct {
 
 	br io.ReadCloser // bfs reader
 	cr io.ReadCloser // compression reader
-	fd FormatDecoder
 }
 
 // Read reads raw bytes from the feed.
@@ -193,11 +200,6 @@ func (r *streamReader) Decode(v interface{}) error {
 // Close closes the reader.
 func (r *streamReader) Close() error {
 	var err error
-	if r.fd != nil {
-		if e := r.fd.Close(); e != nil {
-			err = e
-		}
-	}
 	if r.cr != nil {
 		if e := r.cr.Close(); e != nil {
 			err = e
