@@ -48,6 +48,7 @@ func NewReader(ctx context.Context, remote *bfs.Object, opt *ReaderOptions) (*Re
 
 // MultiReader inits a new reader for multiple remotes.  Remotes are read sequentially as if concatenated.
 // Once all remotes are fully read, Read will return EOF.
+// MultiReader utilises a single format converter therefore all remotes must be same format.
 func MultiReader(ctx context.Context, remotes []*bfs.Object, opt *ReaderOptions) *Reader {
 	return &Reader{
 		remotes: remotes,
@@ -59,16 +60,8 @@ func MultiReader(ctx context.Context, remotes []*bfs.Object, opt *ReaderOptions)
 // Read reads raw bytes from the feed.
 // At end of feed, Read returns 0, io.EOF.
 func (r *Reader) Read(p []byte) (int, error) {
-	if r.pos >= len(r.remotes) {
+	if !r.ensureCurrent() {
 		return 0, io.EOF
-	}
-
-	if r.cur == nil {
-		r.cur = &streamReader{
-			remote: r.remotes[r.pos],
-			opt:    r.opt,
-			ctx:    r.ctx,
-		}
 	}
 
 	n, err := r.cur.Read(p)
@@ -170,6 +163,7 @@ type streamReader struct {
 
 	br io.ReadCloser // bfs reader
 	cr io.ReadCloser // compression reader
+	fd FormatDecoder
 }
 
 // Read reads raw bytes from the feed.
@@ -177,12 +171,7 @@ func (r *streamReader) Read(p []byte) (int, error) {
 	if err := r.ensureOpen(); err != nil {
 		return 0, err
 	}
-	n, err := r.cr.Read(p)
-	// only return EOF once all data has already been read
-	if n > 0 && errors.Is(err, io.EOF) {
-		err = nil
-	}
-	return n, err
+	return r.cr.Read(p)
 }
 
 // Decode decodes the next formatted value from the feed.
