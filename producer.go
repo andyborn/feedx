@@ -41,8 +41,8 @@ func (p *producerState) updateLastModified(t time.Time) {
 	atomic.StoreInt64(&p.lastMod, timestampFromTime(t).Millis())
 }
 
-func (p *producerState) updateNumWritten(n int) {
-	atomic.StoreInt64(&p.numWritten, int64(n))
+func (p *producerState) updateNumWritten(n int64) {
+	atomic.StoreInt64(&p.numWritten, n)
 }
 
 // ProducerOptions configure the producer instance.

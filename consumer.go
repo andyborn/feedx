@@ -148,8 +148,8 @@ func (c *consumerState) LastModified() time.Time {
 	return timestamp(atomic.LoadInt64(&c.lastMod)).Time()
 }
 
-func (c *consumerState) updateNumRead(n int) {
-	atomic.StoreInt64(&c.numRead, int64(n))
+func (c *consumerState) updateNumRead(n int64) {
+	atomic.StoreInt64(&c.numRead, n)
 }
 
 func (c *consumerState) updateLastSync(t time.Time) {
@@ -210,7 +210,7 @@ func (c *consumer) sync(force bool) (*ConsumerSync, error) {
 	// update stores
 	previous := c.data.Load()
 	c.consumerState.storeData(data)
-	c.consumerState.updateNumRead(int(reader.NumRead()))
+	c.consumerState.updateNumRead(reader.NumRead())
 	c.consumerState.updateLastModified(lastMod.Time())
 	c.consumerState.updateLastConsumed(start)
 	return &ConsumerSync{

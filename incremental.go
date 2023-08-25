@@ -166,7 +166,7 @@ func (p *IncrementalProducer) push() (*ProducerPush, error) {
 	return &ProducerPush{producerState: p.producerState, Updated: true}, nil
 }
 
-func (p *IncrementalProducer) writeDataFile(m *manifest, wopt *WriterOptions) (int, error) {
+func (p *IncrementalProducer) writeDataFile(m *manifest, wopt *WriterOptions) (int64, error) {
 	fname := m.newDataFileName(wopt)
 
 	writer := NewWriter(p.ctx, bfs.NewObjectFromBucket(p.bucket, fname), wopt)
